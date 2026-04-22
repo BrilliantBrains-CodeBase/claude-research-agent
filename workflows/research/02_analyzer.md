@@ -12,6 +12,7 @@ You are the **Competitor Analyzer**. You receive one competitor URL, scrape it v
 | `url` | Passed by Orchestrator (one URL per invocation) |
 | `competitor_number` | Passed by Orchestrator (1, 2, 3…) |
 | `run_id` | Passed by Orchestrator |
+| `connector_mode` | Passed by Orchestrator — `http` or `mcp` |
 | `competitor_analysis.md` | `01_research/competitor_analysis.md` — append-only |
 | `domain_skill.md` | `01_research/domain_skill.md` — read for red flags |
 
@@ -21,19 +22,67 @@ You are the **Competitor Analyzer**. You receive one competitor URL, scrape it v
 
 ### Step 1: Scrape the page
 
+Choose the path based on `connector_mode`:
+
+---
+
+**If `connector_mode=http`** — call Firecrawl via Python script:
+
 ```bash
 python tools/firecrawl_scrape.py \
   --url "<url>" \
   --run-id <run_id>
 ```
 
-The output is a JSON object with keys: `url`, `markdown`, `html_excerpt`, `links`, `meta`.
+Output JSON has keys: `url`, `markdown`, `html_excerpt`, `links`, `meta`.
 
-**On scrape failure (exit code 1):**
-- Log the failure
-- Return `{status: failed, url: <url>, reason: <error>}` to Orchestrator
-- Do NOT append anything to `competitor_analysis.md`
-- Stop — let Orchestrator decide whether to source a replacement URL
+**On failure (exit code 1):** the script prints `{status: failed, url, reason}` to stdout — return that to the Orchestrator and stop.
+
+---
+
+**If `connector_mode=mcp`** — use Playwright browser tools:
+
+1. Call `browser_navigate` with the target URL. If navigation fails (timeout, SSL error), treat as scrape failure.
+2. Call `browser_evaluate` with the extraction script below. Copy the output (a JSON string) into a temp file `.tmp/runs/<run_id>/mcp_scrape_raw_<hostname>.json`.
+3. Normalize to canonical form:
+   ```bash
+   python tools/normalize_scrape_output.py \
+     --input .tmp/runs/<run_id>/mcp_scrape_raw_<hostname>.json \
+     --url "<url>"
+   ```
+4. The output JSON has the same keys as the HTTP path: `url`, `markdown`, `html_excerpt`, `links`, `meta`.
+
+**Playwright extraction script** (paste verbatim into `browser_evaluate`):
+
+```javascript
+(function() {
+  var title = document.title;
+  var desc = (document.querySelector('meta[name="description"]') || {}).content || '';
+  var ogTitle = (document.querySelector('meta[property="og:title"]') || {}).content || '';
+  var ogDesc = (document.querySelector('meta[property="og:description"]') || {}).content || '';
+  var bodyText = document.body.innerText.substring(0, 60000);
+  var links = Array.from(document.querySelectorAll('a[href]'))
+    .map(function(a) { return a.href; })
+    .filter(function(h) { return h.indexOf('http') === 0; })
+    .slice(0, 200);
+  return JSON.stringify({
+    source: 'playwright',
+    url: window.location.href,
+    title: title,
+    body_text: bodyText,
+    links: links,
+    meta_description: desc,
+    og_title: ogTitle,
+    og_description: ogDesc
+  });
+})()
+```
+
+**On browser failure:** if `browser_navigate` or `browser_evaluate` throws, return `{status: failed, url: <url>, reason: <error>}` to the Orchestrator and stop. Do NOT append partial data.
+
+---
+
+Regardless of connector, the result is a JSON object with keys: `url`, `markdown`, `html_excerpt`, `links`, `meta`.
 
 ### Step 2: Extract structured data
 
@@ -121,6 +170,8 @@ Log event `competitor_analyzed` with `{url, sections_found: N, trust_signals_fou
 ## Tool permissions
 
 - **Read:** `01_research/domain_skill.md`, `01_research/competitor_analysis.md`
-- **Bash:** `tools/firecrawl_scrape.py`
+- **Bash (http path):** `tools/firecrawl_scrape.py`
+- **Bash (mcp path):** `tools/normalize_scrape_output.py`
+- **MCP tools (mcp path):** `browser_navigate`, `browser_evaluate`
 - **Edit:** `01_research/competitor_analysis.md` (append only)
 - **Write:** `.tmp/runs/<run_id>/`

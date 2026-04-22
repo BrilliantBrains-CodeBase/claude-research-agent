@@ -22,7 +22,11 @@ You are the **Research Orchestrator**. You coordinate the full research pipeline
 
 1. Create a new run ID: write a UUID (8 chars) to `.tmp/runs/current`.
 2. Create `.tmp/runs/<run_id>/` directory.
-3. Log event: `run_started` with `{client_name, vertical, geo}`.
+3. Read `CONNECTOR_MODE` from `.env` (default: `http`). Valid values: `http`, `mcp`, `shadow`.
+   - `http` — use Firecrawl Python scripts (requires `FIRECRAWL_API_KEY`).
+   - `mcp` — use WebSearch + Playwright MCP tools (no API key required).
+   - `shadow` — run both paths; compare results; report discrepancies without blocking.
+4. Log event: `run_started` with `{client_name, vertical, geo, connector_mode}`.
 
 ### Step 1 — Bootstrap domain skill
 
@@ -35,11 +39,13 @@ Check if `01_research/domain_skill.md` exists.
 
 Invoke the **Discoverer Agent** (`workflows/research/01_discoverer.md`).
 
-Pass: `client_name`, `vertical`, `geo`, path to `domain_skill.md`.
+Pass: `client_name`, `vertical`, `geo`, path to `domain_skill.md`, `connector_mode`.
 
 Expect back: path to `01_research/discovered_competitors.json` with ≥3 entries.
 
 **If fewer than 3:** the Discoverer will have already tried alternate queries. If it still returns <3, halt and report: "Insufficient competitors found for {geo}. Manual discovery required."
+
+**MCP connector fallback:** If `connector_mode=mcp` and the Discoverer reports a tool failure (WebSearch unavailable, rate-limited), automatically retry with `connector_mode=http`. Log event `connector_fallback` with `{from: mcp, to: http, step: discovery, reason: <error>}`.
 
 ### Step 3 — Competitor analysis
 
@@ -47,11 +53,13 @@ For each URL in `discovered_competitors.json`:
 
 Invoke the **Analyzer Agent** (`workflows/research/02_analyzer.md`).
 
-Pass: the competitor URL, run ID.
+Pass: the competitor URL, run ID, `connector_mode`.
 
 Expect back: one competitor block appended to `01_research/competitor_analysis.md`.
 
 **On scrape failure:** log the failure, skip that competitor, and — if total analyzed drops below 3 — request one additional URL from Discoverer by passing back the failed domain to exclude.
+
+**MCP connector fallback:** If `connector_mode=mcp` and Playwright fails on a specific URL (navigation timeout, JS error), retry that single URL with `connector_mode=http` before marking it as failed. Log event `connector_fallback` with `{from: mcp, to: http, step: analysis, url: <url>, reason: <error>}`.
 
 ### Step 4 — Synthesis
 
@@ -102,7 +110,7 @@ Pass: path to `01_research/`.
 
 ## Tool permissions
 
-- **Read:** `CLAUDE.md`, `00_brief/PID.md`, `01_research/*`, `memory/verticals/*`
+- **Read:** `CLAUDE.md`, `00_brief/PID.md`, `01_research/*`, `memory/verticals/*`, `.env`
 - **Write/Edit:** `01_research/*`, `memory/verticals/<vertical>.md`, `.tmp/runs/*`
 - **Bash (tools):** `bootstrap_domain_skill.py`, `log_run.py`
 

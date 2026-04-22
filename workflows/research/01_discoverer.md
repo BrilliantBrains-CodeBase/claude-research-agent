@@ -14,6 +14,7 @@ You are the **Competitor Discoverer**. Your job is to find 3–5 direct competit
 | `geo` | Passed by Orchestrator |
 | `domain_skill.md` | `01_research/domain_skill.md` — read for query patterns and exclude-domains list |
 | `run_id` | Passed by Orchestrator |
+| `connector_mode` | Passed by Orchestrator — `http` or `mcp` |
 
 ---
 
@@ -27,7 +28,11 @@ Read `01_research/domain_skill.md`:
 
 ### Step 2: Run search queries
 
-For each query pattern (up to 5 variants), call:
+Run searches for each query pattern (up to 5 variants). Choose the path based on `connector_mode`:
+
+---
+
+**If `connector_mode=http`** — call Firecrawl via Python script:
 
 ```bash
 python tools/firecrawl_search.py \
@@ -37,6 +42,32 @@ python tools/firecrawl_search.py \
   --exclude-domains "<comma-separated list from domain_skill.md>" \
   --run-id <run_id>
 ```
+
+Output is `[{url, title, description, rank}]` already in canonical form.
+
+---
+
+**If `connector_mode=mcp`** — use the WebSearch tool directly:
+
+For each query variant, invoke the **WebSearch** tool with the query string (e.g. `"multispeciality hospital Pune"`).
+
+Collect all result objects. Write the raw results to a temp file:
+```
+.tmp/runs/<run_id>/mcp_search_raw_<slug>.json
+```
+
+Then normalize to canonical form:
+```bash
+python tools/normalize_search_results.py \
+  --input .tmp/runs/<run_id>/mcp_search_raw_<slug>.json \
+  --output .tmp/runs/<run_id>/search_<slug>.json
+```
+
+The output is `[{url, title, description, rank}]` — same schema as the HTTP path.
+
+**Note:** WebSearch results do not go through Firecrawl's exclude-domains filter. Apply the domain exclusion list manually in Step 3 (Filter and deduplicate).
+
+---
 
 Collect all returned URLs across all queries into a single candidate pool.
 
@@ -109,5 +140,7 @@ Also log one `competitor_discovered` event per URL via the events.jsonl pattern.
 ## Tool permissions
 
 - **Read:** `01_research/domain_skill.md`, `00_brief/PID.md`
-- **Bash:** `tools/firecrawl_search.py`
+- **Bash (http path):** `tools/firecrawl_search.py`
+- **Bash (mcp path):** `tools/normalize_search_results.py`
+- **MCP tools (mcp path):** `WebSearch`
 - **Write:** `01_research/discovered_competitors.json`, `.tmp/runs/<run_id>/`
